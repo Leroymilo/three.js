@@ -8044,8 +8044,6 @@ class Object3D extends EventDispatcher {
 
 	}
 
-	get_bounding_sphere() {return new Sphere()}	// to overload in child classes
-
 }
 
 Object3D.DEFAULT_UP = /*@__PURE__*/ new Vector3( 0, 1, 0 );
@@ -11440,7 +11438,7 @@ class Mesh extends Object3D {
 		this.material = material;
 
 		this.updateMorphTargets();
-		
+
 	}
 
 	copy( source, recursive ) {
@@ -11541,11 +11539,6 @@ class Mesh extends Object3D {
 
 	}
 
-	get_bounding_sphere() {
-		if ( geometry.boundingSphere === null ) geometry.computeBoundingSphere();
-		return geometry.boundingSphere;
-	}
-
 	raycast( raycaster, intersects ) {
 
 		const geometry = this.geometry;
@@ -11556,7 +11549,9 @@ class Mesh extends Object3D {
 
 		// test with bounding sphere in world space
 
-		_sphere$5.copy( this.get_bounding_sphere() );
+		if ( geometry.boundingSphere === null ) geometry.computeBoundingSphere();
+
+		_sphere$5.copy( geometry.boundingSphere );
 		_sphere$5.applyMatrix4( matrixWorld );
 
 		// check distance from ray origin to bounding sphere
@@ -16601,6 +16596,8 @@ class PMREMGenerator {
 
 }
 
+
+
 function _createPlanes( lodMax ) {
 
 	const lodPlanes = [];
@@ -19298,6 +19295,8 @@ function loopReplacer( match, start, end, snippet ) {
 
 }
 
+//
+
 function generatePrecision( parameters ) {
 
 	let precisionstring = 'precision ' + parameters.precision + ' float;\nprecision ' + parameters.precision + ' int;';
@@ -20861,6 +20860,7 @@ function reversePainterSortStable( a, b ) {
 
 }
 
+
 function WebGLRenderList() {
 
 	const renderItems = [];
@@ -21183,6 +21183,8 @@ function ShadowUniformsCache() {
 	};
 
 }
+
+
 
 let nextVersion = 0;
 
@@ -25790,56 +25792,6 @@ class Group extends Object3D {
 
 		this.type = 'Group';
 
-		this.boundingSphere = new Sphere();
-
-	}
-
-	#add_obj_bounding_sphere( child ) {
-		if (typeof child.get_bounding_sphere === 'undefined') {return}
-		let child_sphere = new Sphere();
-		child_sphere = child.get_bounding_sphere();
-
-		if (child_sphere.radius <= 0) {return}
-
-		if (this.boundingSphere.radius <= 0) {
-			this.boundingSphere = child_sphere;
-			return;
-		}
-
-		let vec = new Vector3().subVectors(child_sphere.center - this.boundingSphere.center).normalize();
-		let p1 = child_sphere.center.addScaledVector(vec, child_sphere.radius);
-
-		if (this.boundingSphere.containsPoint(p1)) {return}
-
-		let p2 = this.boundingSphere.center.addScaledVector(vec, -this.boundingSphere.radius);
-
-		this.boundingSphere.center = new Vector3().lerpVectors(p1, p2, 0.5);
-		this.boundingSphere.radius = p1.distanceTo(p2) / 2;
-	}
-
-	get_bounding_sphere() {
-		if (this.boundingSphere.radius > 0) {return this.boundingSphere}
-
-		let nb_child = this.children.length;
-
-		if (nb_child == 0) {return new Sphere()}
-
-		for (let i = 0; i < this.children.length; i++) {
-
-			this.#add_obj_bounding_sphere(this.children[i]);
-		}
-
-		return this.boundingSphere;
-	}
-
-	add( object ) {
-		super().add(object);
-		this.#add_obj_bounding_sphere(object);
-	}
-
-	remove( object ) {
-		super().remove(object);
-		this.boundingSphere = new Sphere();	//reset sphere because can't check 
 	}
 
 }
