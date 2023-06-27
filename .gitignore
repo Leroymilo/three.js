@@ -15,4 +15,6 @@ test/treeshake/stats.html
 test/e2e/chromium
 test/e2e/output-screenshots
 
+test_raycast
+
 **/node_modules
