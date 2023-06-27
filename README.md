@@ -6,6 +6,10 @@
 [![DeepScan][deepscan]][deepscan-url]
 [![Discord][discord]][discord-url]
 
+## Fork
+
+This is a fork which goal is to optimize raycasting for a specific project by implementing recursive bounding sphere and sorting objects by ray-origin - bounding-sphere distance on objects that will never be modified.
+
 #### JavaScript 3D library
 
 The aim of the project is to create an easy to use, lightweight, cross-browser, general purpose 3D library. The current builds only include a WebGL renderer but WebGPU (experimental), SVG and CSS3D renderers are also available as addons.
