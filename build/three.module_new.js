@@ -8044,8 +8044,6 @@ class Object3D extends EventDispatcher {
 
 	}
 
-	get_bounding_sphere() {return new Sphere()}	// to overload in child classes
-
 }
 
 Object3D.DEFAULT_UP = /*@__PURE__*/ new Vector3( 0, 1, 0 );
@@ -10378,6 +10376,22 @@ class BufferGeometry extends EventDispatcher {
 
 	}
 
+	/**
+	 * @returns {Box3}
+	 */
+	get_bounding_box() {
+		if (this.boundingBox == null) this.computeBoundingBox();
+		return this.boundingBox;
+	}
+
+	/**
+	 * @returns {Sphere}
+	 */
+	get_bounding_sphere() {
+		if (this.boundingSphere == null) this.computeBoundingSphere();
+		return this.boundingSphere;
+	}
+
 	getIndex() {
 
 		return this.index;
@@ -11440,7 +11454,34 @@ class Mesh extends Object3D {
 		this.material = material;
 
 		this.updateMorphTargets();
-		
+
+		this.bounding_box = null;
+		this.bounding_sphere = null;
+
+	}
+
+	/**
+	 * @returns {Box3}
+	 */
+	get_bounding_box() {
+		if (this.bounding_box == null) {
+			this.bounding_box = new Box3();
+			this.bounding_box.copy(this.geometry.get_bounding_box());
+			this.bounding_box.applyMatrix4(this.matrixWorld);
+		}
+		return this.bounding_box;
+	}
+
+	/**
+	 * @returns {Sphere}
+	 */
+	get_bounding_sphere() {
+		if (this.bounding_sphere == null) {
+			this.bounding_sphere = new Sphere();
+			this.bounding_sphere.copy(this.geometry.get_bounding_sphere());
+			this.bounding_sphere.applyMatrix4(this.matrixWorld);
+		}
+		return this.bounding_sphere;
 	}
 
 	copy( source, recursive ) {
@@ -11541,11 +11582,6 @@ class Mesh extends Object3D {
 
 	}
 
-	get_bounding_sphere() {
-		if ( geometry.boundingSphere === null ) geometry.computeBoundingSphere();
-		return geometry.boundingSphere;
-	}
-
 	raycast( raycaster, intersects ) {
 
 		const geometry = this.geometry;
@@ -11556,7 +11592,9 @@ class Mesh extends Object3D {
 
 		// test with bounding sphere in world space
 
-		_sphere$5.copy( this.get_bounding_sphere() );
+		if ( geometry.boundingSphere === null ) geometry.computeBoundingSphere();
+
+		_sphere$5.copy( geometry.boundingSphere );
 		_sphere$5.applyMatrix4( matrixWorld );
 
 		// check distance from ray origin to bounding sphere
@@ -19298,6 +19336,8 @@ function loopReplacer( match, start, end, snippet ) {
 
 }
 
+//
+
 function generatePrecision( parameters ) {
 
 	let precisionstring = 'precision ' + parameters.precision + ' float;\nprecision ' + parameters.precision + ' int;';
@@ -20860,6 +20900,7 @@ function reversePainterSortStable( a, b ) {
 	}
 
 }
+
 
 function WebGLRenderList() {
 
@@ -25790,58 +25831,77 @@ class Group extends Object3D {
 
 		this.type = 'Group';
 
-		this.boundingSphere = new Sphere();
+		this.bounding_box = null;
+		this.bounding_sphere = null;
 
 	}
 
-	#add_obj_bounding_sphere( child ) {
-		if (typeof child.get_bounding_sphere === 'undefined') {return}
-		let child_sphere = new Sphere();
-		child_sphere = child.get_bounding_sphere();
+	/**
+	 * @returns {Box3}
+	 */
+	get_bounding_box() {
+		if (this.bounding_box == null) {
+			this.bounding_box = new Box3().makeEmpty();
 
-		if (child_sphere.radius <= 0) {return}
+			for (let i = 0; i < this.children.length; i++) {
+				let child = this.children[i];
 
-		if (this.boundingSphere.radius <= 0) {
-			this.boundingSphere = child_sphere;
-			return;
+				if (typeof child.get_bounding_box === 'function') {
+					this.bounding_box.union(child.get_bounding_box());
+				}
+			}
 		}
-
-		let vec = new Vector3().subVectors(child_sphere.center - this.boundingSphere.center).normalize();
-		let p1 = child_sphere.center.addScaledVector(vec, child_sphere.radius);
-
-		if (this.boundingSphere.containsPoint(p1)) {return}
-
-		let p2 = this.boundingSphere.center.addScaledVector(vec, -this.boundingSphere.radius);
-
-		this.boundingSphere.center = new Vector3().lerpVectors(p1, p2, 0.5);
-		this.boundingSphere.radius = p1.distanceTo(p2) / 2;
+		return this.bounding_box;
 	}
 
+	/**
+	 * @returns {Sphere}
+	 */
 	get_bounding_sphere() {
-		if (this.boundingSphere.radius > 0) {return this.boundingSphere}
+		if (this.bounding_sphere == null) {
+			this.bounding_sphere = new Sphere().makeEmpty();
 
-		let nb_child = this.children.length;
+			for (let i = 0; i < this.children.length; i++) {
+				let child = this.children[i];
 
-		if (nb_child == 0) {return new Sphere()}
-
-		for (let i = 0; i < this.children.length; i++) {
-
-			this.#add_obj_bounding_sphere(this.children[i]);
+				if (typeof child.get_bounding_sphere === 'function') {
+					this.bounding_sphere.union(child.get_bounding_sphere());
+				}
+			}
 		}
-
-		return this.boundingSphere;
+		return this.bounding_sphere;
 	}
 
-	add( object ) {
-		super().add(object);
-		this.#add_obj_bounding_sphere(object);
+	/**
+	 * @param {Object3D} object 
+	 */
+	add(object) {
+		super.add(object)
+
+		if (this.bounding_box == null) {
+			this.get_bounding_box();
+		}
+		else if (typeof child.get_bounding_box === 'function') {
+			this.bounding_box.union(object.get_bounding_box())
+		}
+		
+		if (this.bounding_sphere == null) {
+			this.get_bounding_sphere();
+		}
+		else if (typeof child.get_bounding_sphere === 'function') {
+			this.bounding_sphere.union(object.get_bounding_sphere())
+		}
 	}
 
-	remove( object ) {
-		super().remove(object);
-		this.boundingSphere = new Sphere();	//reset sphere because can't check 
-	}
+	/**
+	 * @param {Object3D} object
+	 */
+	remove(object) {
+		super.remove(object)
 
+		this.bounding_box = null;
+		this.bounding_sphere = null;
+	}
 }
 
 const _moveEvent = { type: 'move' };
@@ -49301,6 +49361,133 @@ class Raycaster {
 
 	}
 
+	/**
+	 * @returns {{object: Object3D, point: Vector3, distance: Number}}
+	 * @param {Scene | Group} object
+	 */
+	intersect_first( object ) {
+		
+		/**@type {Array<{object: Mesh | Group, distance: Number}>}*/
+		let dist_objs = [];
+
+		/**@type {{object: Object3D, point: Vector3, distance: Number}}*/
+		let intersection = {
+			object: null,
+			point: null,
+			distance: Infinity
+		};
+
+		for (let i = 0; i < object.children.length; i++) {
+			let child = object.children[i];
+
+			if ( !(child.isMesh || child.isGroup) ) continue;
+
+			let dist = dist_to_bounds( child, this.ray );
+
+			if (!isFinite(dist) /*&& dist > 0*/) continue;	// not intersecting
+
+			dist_objs.push({
+				object: child,
+				distance: dist
+			});
+		}
+
+		dist_objs.sort( ascSort );
+
+		for (let i = 0; i < dist_objs.length; i++) {
+
+			if (dist_objs[i].distance >= intersection.distance) {
+				return intersection;
+			}
+
+			/**@type {{object: Object3D, point: Vector3, distance: Number}}*/
+			let new_inter;
+			let obj = dist_objs[i].object;
+			if (obj.isGroup) {
+				new_inter = this.intersect_first(obj);
+			}
+			else {
+				new_inter = this.intersect_first_in_mesh(obj);
+			}
+
+			if (new_inter.distance < intersection.distance) {
+				intersection = new_inter;	
+			}
+		}
+
+		return intersection;
+
+	}
+
+	/**
+	 * @returns {{object: Object3D, point: Vector3, distance: Number}}
+	 * @param {Mesh} mesh 
+	 */
+	intersect_first_in_mesh( mesh ) {
+
+		let intersects = [];
+		
+		let inverseWorld = new Matrix4().copy(mesh.matrixWorld).invert();
+		let ray_local = new Ray().copy(this.ray).applyMatrix4(inverseWorld);
+		
+		mesh._computeIntersections(this, intersects, ray_local);
+
+		if (intersects.length === 0) {
+			return {
+				object: null,
+				point: null,
+				distance: Infinity
+			};
+		}
+
+		return intersects[0];
+	}
+}
+
+/**
+ * @param {Mesh | Group} object
+ * @param {Ray} ray
+ * @returns {Number}
+ */
+function dist_to_bounds( object, ray ) {
+	// Only classes with get_bounding_XXX implemented
+	if ( ! (object.isGroup || object.isMesh) ) return -Infinity;
+
+	const box = object.get_bounding_box();
+	const sphere = object.get_bounding_sphere();
+	const origin = ray.origin;
+
+	let box_dist = 0, sphere_dist = 0;
+
+	if (box.containsPoint(origin)) {
+		box_dist = -1;
+	}
+	else {
+		let box_inter = new Vector3();
+		if (ray.intersectBox(box, box_inter) == null) box_dist = Infinity;
+		else box_dist = origin.distanceTo(box_inter);
+	}
+
+	if (sphere.containsPoint(origin)) {
+		sphere_dist = -1;
+	}
+	else {
+		let sphere_inter = new Vector3();
+		if (ray.intersectSphere(sphere, sphere_inter) == null) sphere_dist = Infinity;
+		else sphere_dist = origin.distanceTo(sphere_dist);
+	}
+
+	// Infinite dist <=> not intersecting
+	if (!isFinite(box_dist) && !isFinite(sphere_dist)) return Infinity;
+	if (!isFinite(box_dist)) return sphere_dist;
+	if (!isFinite(sphere_dist)) return box_dist;
+
+	// dist == -1 <=> contained
+	if (box_dist < 0 && sphere_dist < 0) return -1;
+	if (box_dist < 0) return sphere_dist;
+	if (sphere_dist < 0) return box_dist;
+
+	return Math.max(box_dist, sphere_dist);
 }
 
 function ascSort( a, b ) {
