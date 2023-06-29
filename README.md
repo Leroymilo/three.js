@@ -8,7 +8,8 @@
 
 ## Fork
 
-This is a fork which goal is to optimize raycasting for a specific project by implementing recursive bounding sphere and sorting objects by ray-origin - bounding-sphere distance on objects that will never be modified.
+This is a fork which goal is to optimize raycasting for a specific project by implementing sorting objects by ray-origin - bounding-sphere/box distance on objects that will never be modified (Groups and Meshes in our case). The optimization is made in the file three.module_new.js, it may be used by calling Raycaster.intersect_first(scene/group).</br>
+The next amelioration will be to implement octree on Meshes.
 
 #### JavaScript 3D library
 
