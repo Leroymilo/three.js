@@ -8,8 +8,20 @@
 
 ## Fork
 
-This is a fork which goal is to optimize raycasting for a specific project by implementing sorting objects by ray-origin - bounding-sphere/box distance on objects that will never be modified (Groups and Meshes in our case). The optimization is made in the file three.module_new.js, it may be used by calling Raycaster.intersect_first(scene/group).</br>
-The next amelioration will be to implement octree on Meshes.
+This is a fork which goal is to optimize raycasting to find the first intersection for a specific project in 2 ways:
+- Object sorting by distance between bounding box or bounding sphere
+- Octree generation on Meshes
+
+The only modification in three.module.js is the addition of an export used in the extension.</br>
+To use the extension, you must import build/raycast_extension.js.
+
+You can use the optimizations by calling Mesh.make_octree on every mesh you want to raycast to, or call Scene.make_octrees to compute every octree in the scene.</br>
+Once octrees are built (this can take a pretty long time), you can call Raycaster.intersect_first and pass your scene, a group or a mesh you want to raycast to.</br>
+Any Mesh which does not have an octree will use the regular method to raycast : Mesh._computeIntersections which loop through all the geometry.
+
+As you can see if you used it, the octrees are automatically downloaded on creation, this is because it is intended to save them to avoid building them every time the page is reloaded, you can disable this in raycast_extension.js at Mesh.make_octree.</br>
+There is a parameter in raycast_extension.js called 'MAX_TRIS' which limits the octree depth : it stops whenever a node has less than MAX_TRIS triangles. You can decrease this constant to have more precise octrees but they will take significantly longer to be built and the files that you can store will be heavier.</br>
+The final file size can be reduced by ordering triangles in the model so that consecutive indices are in the same octree leaf.
 
 #### JavaScript 3D library
 

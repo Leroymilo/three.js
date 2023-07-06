@@ -10376,22 +10376,6 @@ class BufferGeometry extends EventDispatcher {
 
 	}
 
-	/**
-	 * @returns {Box3}
-	 */
-	get_bounding_box() {
-		if (this.boundingBox == null) this.computeBoundingBox();
-		return this.boundingBox;
-	}
-
-	/**
-	 * @returns {Sphere}
-	 */
-	get_bounding_sphere() {
-		if (this.boundingSphere == null) this.computeBoundingSphere();
-		return this.boundingSphere;
-	}
-
 	getIndex() {
 
 		return this.index;
@@ -11455,33 +11439,6 @@ class Mesh extends Object3D {
 
 		this.updateMorphTargets();
 
-		this.bounding_box = null;
-		this.bounding_sphere = null;
-
-	}
-
-	/**
-	 * @returns {Box3}
-	 */
-	get_bounding_box() {
-		if (this.bounding_box == null) {
-			this.bounding_box = new Box3();
-			this.bounding_box.copy(this.geometry.get_bounding_box());
-			this.bounding_box.applyMatrix4(this.matrixWorld);
-		}
-		return this.bounding_box;
-	}
-
-	/**
-	 * @returns {Sphere}
-	 */
-	get_bounding_sphere() {
-		if (this.bounding_sphere == null) {
-			this.bounding_sphere = new Sphere();
-			this.bounding_sphere.copy(this.geometry.get_bounding_sphere());
-			this.bounding_sphere.applyMatrix4(this.matrixWorld);
-		}
-		return this.bounding_sphere;
 	}
 
 	copy( source, recursive ) {
@@ -16639,6 +16596,8 @@ class PMREMGenerator {
 
 }
 
+
+
 function _createPlanes( lodMax ) {
 
 	const lodPlanes = [];
@@ -21224,6 +21183,8 @@ function ShadowUniformsCache() {
 	};
 
 }
+
+
 
 let nextVersion = 0;
 
@@ -25831,77 +25792,8 @@ class Group extends Object3D {
 
 		this.type = 'Group';
 
-		this.bounding_box = null;
-		this.bounding_sphere = null;
-
 	}
 
-	/**
-	 * @returns {Box3}
-	 */
-	get_bounding_box() {
-		if (this.bounding_box == null) {
-			this.bounding_box = new Box3().makeEmpty();
-
-			for (let i = 0; i < this.children.length; i++) {
-				let child = this.children[i];
-
-				if (typeof child.get_bounding_box === 'function') {
-					this.bounding_box.union(child.get_bounding_box());
-				}
-			}
-		}
-		return this.bounding_box;
-	}
-
-	/**
-	 * @returns {Sphere}
-	 */
-	get_bounding_sphere() {
-		if (this.bounding_sphere == null) {
-			this.bounding_sphere = new Sphere().makeEmpty();
-
-			for (let i = 0; i < this.children.length; i++) {
-				let child = this.children[i];
-
-				if (typeof child.get_bounding_sphere === 'function') {
-					this.bounding_sphere.union(child.get_bounding_sphere());
-				}
-			}
-		}
-		return this.bounding_sphere;
-	}
-
-	/**
-	 * @param {Object3D} object 
-	 */
-	add(object) {
-		super.add(object)
-
-		if (this.bounding_box == null) {
-			this.get_bounding_box();
-		}
-		else if (typeof child.get_bounding_box === 'function') {
-			this.bounding_box.union(object.get_bounding_box())
-		}
-		
-		if (this.bounding_sphere == null) {
-			this.get_bounding_sphere();
-		}
-		else if (typeof child.get_bounding_sphere === 'function') {
-			this.bounding_sphere.union(object.get_bounding_sphere())
-		}
-	}
-
-	/**
-	 * @param {Object3D} object
-	 */
-	remove(object) {
-		super.remove(object)
-
-		this.bounding_box = null;
-		this.bounding_sphere = null;
-	}
 }
 
 const _moveEvent = { type: 'move' };
@@ -49361,133 +49253,6 @@ class Raycaster {
 
 	}
 
-	/**
-	 * @returns {{object: Object3D, point: Vector3, distance: Number}}
-	 * @param {Scene | Group} object
-	 */
-	intersect_first( object ) {
-		
-		/**@type {Array<{object: Mesh | Group, distance: Number}>}*/
-		let dist_objs = [];
-
-		/**@type {{object: Object3D, point: Vector3, distance: Number}}*/
-		let intersection = {
-			object: null,
-			point: null,
-			distance: Infinity
-		};
-
-		for (let i = 0; i < object.children.length; i++) {
-			let child = object.children[i];
-
-			if ( !(child.isMesh || child.isGroup) ) continue;
-
-			let dist = dist_to_bounds( child, this.ray );
-
-			if (!isFinite(dist) /*&& dist > 0*/) continue;	// not intersecting
-
-			dist_objs.push({
-				object: child,
-				distance: dist
-			});
-		}
-
-		dist_objs.sort( ascSort );
-
-		for (let i = 0; i < dist_objs.length; i++) {
-
-			if (dist_objs[i].distance >= intersection.distance) {
-				return intersection;
-			}
-
-			/**@type {{object: Object3D, point: Vector3, distance: Number}}*/
-			let new_inter;
-			let obj = dist_objs[i].object;
-			if (obj.isGroup) {
-				new_inter = this.intersect_first(obj);
-			}
-			else {
-				new_inter = this.intersect_first_in_mesh(obj);
-			}
-
-			if (new_inter.distance < intersection.distance) {
-				intersection = new_inter;	
-			}
-		}
-
-		return intersection;
-
-	}
-
-	/**
-	 * @returns {{object: Object3D, point: Vector3, distance: Number}}
-	 * @param {Mesh} mesh 
-	 */
-	intersect_first_in_mesh( mesh ) {
-
-		let intersects = [];
-		
-		let inverseWorld = new Matrix4().copy(mesh.matrixWorld).invert();
-		let ray_local = new Ray().copy(this.ray).applyMatrix4(inverseWorld);
-		
-		mesh._computeIntersections(this, intersects, ray_local);
-
-		if (intersects.length === 0) {
-			return {
-				object: null,
-				point: null,
-				distance: Infinity
-			};
-		}
-
-		return intersects[0];
-	}
-}
-
-/**
- * @param {Mesh | Group} object
- * @param {Ray} ray
- * @returns {Number}
- */
-function dist_to_bounds( object, ray ) {
-	// Only classes with get_bounding_XXX implemented
-	if ( ! (object.isGroup || object.isMesh) ) return -Infinity;
-
-	const box = object.get_bounding_box();
-	const sphere = object.get_bounding_sphere();
-	const origin = ray.origin;
-
-	let box_dist = 0, sphere_dist = 0;
-
-	if (box.containsPoint(origin)) {
-		box_dist = -1;
-	}
-	else {
-		let box_inter = new Vector3();
-		if (ray.intersectBox(box, box_inter) == null) box_dist = Infinity;
-		else box_dist = origin.distanceTo(box_inter);
-	}
-
-	if (sphere.containsPoint(origin)) {
-		sphere_dist = -1;
-	}
-	else {
-		let sphere_inter = new Vector3();
-		if (ray.intersectSphere(sphere, sphere_inter) == null) sphere_dist = Infinity;
-		else sphere_dist = origin.distanceTo(sphere_dist);
-	}
-
-	// Infinite dist <=> not intersecting
-	if (!isFinite(box_dist) && !isFinite(sphere_dist)) return Infinity;
-	if (!isFinite(box_dist)) return sphere_dist;
-	if (!isFinite(sphere_dist)) return box_dist;
-
-	// dist == -1 <=> contained
-	if (box_dist < 0 && sphere_dist < 0) return -1;
-	if (box_dist < 0) return sphere_dist;
-	if (sphere_dist < 0) return box_dist;
-
-	return Math.max(box_dist, sphere_dist);
 }
 
 function ascSort( a, b ) {
@@ -51499,3 +51264,4 @@ if ( typeof window !== 'undefined' ) {
 }
 
 export { ACESFilmicToneMapping, AddEquation, AddOperation, AdditiveAnimationBlendMode, AdditiveBlending, AlphaFormat, AlwaysCompare, AlwaysDepth, AlwaysStencilFunc, AmbientLight, AmbientLightProbe, AnimationAction, AnimationClip, AnimationLoader, AnimationMixer, AnimationObjectGroup, AnimationUtils, ArcCurve, ArrayCamera, ArrowHelper, Audio, AudioAnalyser, AudioContext, AudioListener, AudioLoader, AxesHelper, BackSide, BasicDepthPacking, BasicShadowMap, Bone, BooleanKeyframeTrack, Box2, Box3, Box3Helper, BoxGeometry, BoxHelper, BufferAttribute, BufferGeometry, BufferGeometryLoader, ByteType, Cache, Camera, CameraHelper, CanvasTexture, CapsuleGeometry, CatmullRomCurve3, CineonToneMapping, CircleGeometry, ClampToEdgeWrapping, Clock, Color, ColorKeyframeTrack, ColorManagement, CompressedArrayTexture, CompressedTexture, CompressedTextureLoader, ConeGeometry, CubeCamera, CubeReflectionMapping, CubeRefractionMapping, CubeTexture, CubeTextureLoader, CubeUVReflectionMapping, CubicBezierCurve, CubicBezierCurve3, CubicInterpolant, CullFaceBack, CullFaceFront, CullFaceFrontBack, CullFaceNone, Curve, CurvePath, CustomBlending, CustomToneMapping, CylinderGeometry, Cylindrical, Data3DTexture, DataArrayTexture, DataTexture, DataTextureLoader, DataUtils, DecrementStencilOp, DecrementWrapStencilOp, DefaultLoadingManager, DepthFormat, DepthStencilFormat, DepthTexture, DirectionalLight, DirectionalLightHelper, DiscreteInterpolant, DisplayP3ColorSpace, DodecahedronGeometry, DoubleSide, DstAlphaFactor, DstColorFactor, DynamicCopyUsage, DynamicDrawUsage, DynamicReadUsage, EdgesGeometry, EllipseCurve, EqualCompare, EqualDepth, EqualStencilFunc, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Euler, EventDispatcher, ExtrudeGeometry, FileLoader, Float16BufferAttribute, Float32BufferAttribute, Float64BufferAttribute, FloatType, Fog, FogExp2, FramebufferTexture, FrontSide, Frustum, GLBufferAttribute, GLSL1, GLSL3, GreaterCompare, GreaterDepth, GreaterEqualCompare, GreaterEqualDepth, GreaterEqualStencilFunc, GreaterStencilFunc, GridHelper, Group, HalfFloatType, HemisphereLight, HemisphereLightHelper, HemisphereLightProbe, IcosahedronGeometry, ImageBitmapLoader, ImageLoader, ImageUtils, IncrementStencilOp, IncrementWrapStencilOp, InstancedBufferAttribute, InstancedBufferGeometry, InstancedInterleavedBuffer, InstancedMesh, Int16BufferAttribute, Int32BufferAttribute, Int8BufferAttribute, IntType, InterleavedBuffer, InterleavedBufferAttribute, Interpolant, InterpolateDiscrete, InterpolateLinear, InterpolateSmooth, InvertStencilOp, KeepStencilOp, KeyframeTrack, LOD, LatheGeometry, Layers, LessCompare, LessDepth, LessEqualCompare, LessEqualDepth, LessEqualStencilFunc, LessStencilFunc, Light, LightProbe, Line, Line3, LineBasicMaterial, LineCurve, LineCurve3, LineDashedMaterial, LineLoop, LineSegments, LinearEncoding, LinearFilter, LinearInterpolant, LinearMipMapLinearFilter, LinearMipMapNearestFilter, LinearMipmapLinearFilter, LinearMipmapNearestFilter, LinearSRGBColorSpace, LinearToneMapping, Loader, LoaderUtils, LoadingManager, LoopOnce, LoopPingPong, LoopRepeat, LuminanceAlphaFormat, LuminanceFormat, MOUSE, Material, MaterialLoader, MathUtils, Matrix3, Matrix4, MaxEquation, Mesh, MeshBasicMaterial, MeshDepthMaterial, MeshDistanceMaterial, MeshLambertMaterial, MeshMatcapMaterial, MeshNormalMaterial, MeshPhongMaterial, MeshPhysicalMaterial, MeshStandardMaterial, MeshToonMaterial, MinEquation, MirroredRepeatWrapping, MixOperation, MultiplyBlending, MultiplyOperation, NearestFilter, NearestMipMapLinearFilter, NearestMipMapNearestFilter, NearestMipmapLinearFilter, NearestMipmapNearestFilter, NeverCompare, NeverDepth, NeverStencilFunc, NoBlending, NoColorSpace, NoToneMapping, NormalAnimationBlendMode, NormalBlending, NotEqualCompare, NotEqualDepth, NotEqualStencilFunc, NumberKeyframeTrack, Object3D, ObjectLoader, ObjectSpaceNormalMap, OctahedronGeometry, OneFactor, OneMinusDstAlphaFactor, OneMinusDstColorFactor, OneMinusSrcAlphaFactor, OneMinusSrcColorFactor, OrthographicCamera, PCFShadowMap, PCFSoftShadowMap, PMREMGenerator, Path, PerspectiveCamera, Plane, PlaneGeometry, PlaneHelper, PointLight, PointLightHelper, Points, PointsMaterial, PolarGridHelper, PolyhedronGeometry, PositionalAudio, PropertyBinding, PropertyMixer, QuadraticBezierCurve, QuadraticBezierCurve3, Quaternion, QuaternionKeyframeTrack, QuaternionLinearInterpolant, RED_GREEN_RGTC2_Format, RED_RGTC1_Format, REVISION, RGBADepthPacking, RGBAFormat, RGBAIntegerFormat, RGBA_ASTC_10x10_Format, RGBA_ASTC_10x5_Format, RGBA_ASTC_10x6_Format, RGBA_ASTC_10x8_Format, RGBA_ASTC_12x10_Format, RGBA_ASTC_12x12_Format, RGBA_ASTC_4x4_Format, RGBA_ASTC_5x4_Format, RGBA_ASTC_5x5_Format, RGBA_ASTC_6x5_Format, RGBA_ASTC_6x6_Format, RGBA_ASTC_8x5_Format, RGBA_ASTC_8x6_Format, RGBA_ASTC_8x8_Format, RGBA_BPTC_Format, RGBA_ETC2_EAC_Format, RGBA_PVRTC_2BPPV1_Format, RGBA_PVRTC_4BPPV1_Format, RGBA_S3TC_DXT1_Format, RGBA_S3TC_DXT3_Format, RGBA_S3TC_DXT5_Format, RGB_ETC1_Format, RGB_ETC2_Format, RGB_PVRTC_2BPPV1_Format, RGB_PVRTC_4BPPV1_Format, RGB_S3TC_DXT1_Format, RGFormat, RGIntegerFormat, RawShaderMaterial, Ray, Raycaster, RectAreaLight, RedFormat, RedIntegerFormat, ReinhardToneMapping, RepeatWrapping, ReplaceStencilOp, ReverseSubtractEquation, RingGeometry, SIGNED_RED_GREEN_RGTC2_Format, SIGNED_RED_RGTC1_Format, SRGBColorSpace, Scene, ShaderChunk, ShaderLib, ShaderMaterial, ShadowMaterial, Shape, ShapeGeometry, ShapePath, ShapeUtils, ShortType, Skeleton, SkeletonHelper, SkinnedMesh, Source, Sphere, SphereGeometry, Spherical, SphericalHarmonics3, SplineCurve, SpotLight, SpotLightHelper, Sprite, SpriteMaterial, SrcAlphaFactor, SrcAlphaSaturateFactor, SrcColorFactor, StaticCopyUsage, StaticDrawUsage, StaticReadUsage, StereoCamera, StreamCopyUsage, StreamDrawUsage, StreamReadUsage, StringKeyframeTrack, SubtractEquation, SubtractiveBlending, TOUCH, TangentSpaceNormalMap, TetrahedronGeometry, Texture, TextureLoader, TorusGeometry, TorusKnotGeometry, Triangle, TriangleFanDrawMode, TriangleStripDrawMode, TrianglesDrawMode, TubeGeometry, TwoPassDoubleSide, UVMapping, Uint16BufferAttribute, Uint32BufferAttribute, Uint8BufferAttribute, Uint8ClampedBufferAttribute, Uniform, UniformsGroup, UniformsLib, UniformsUtils, UnsignedByteType, UnsignedInt248Type, UnsignedIntType, UnsignedShort4444Type, UnsignedShort5551Type, UnsignedShortType, VSMShadowMap, Vector2, Vector3, Vector4, VectorKeyframeTrack, VideoTexture, WebGL1Renderer, WebGL3DRenderTarget, WebGLArrayRenderTarget, WebGLCoordinateSystem, WebGLCubeRenderTarget, WebGLMultipleRenderTargets, WebGLRenderTarget, WebGLRenderer, WebGLUtils, WebGPUCoordinateSystem, WireframeGeometry, WrapAroundEnding, ZeroCurvatureEnding, ZeroFactor, ZeroSlopeEnding, ZeroStencilOp, _SRGBAFormat, sRGBEncoding };
+export {checkGeometryIntersection};
