@@ -59,14 +59,24 @@ Mesh.prototype.get_bounding_sphere = function() {
 
 Mesh.prototype.make_octree = function() {
     /** @type {OctreeNode} */
-    this.octree = new OctreeNode(this);
+    this.octree = new OctreeNode();
+    this.octree.build(this);
     
-    var a = document.createElement("a");
-    var file = new Blob([JSON.stringify(this.octree/*, undefined, 2*/)], {type: "application/json"});
-    a.href = URL.createObjectURL(file);
-    a.download = this.name + "_octree.json";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    // var a = document.createElement("a");
+    // var file = new Blob([JSON.stringify(this.octree/*, undefined, 2*/)], {type: "application/json"});
+    // a.href = URL.createObjectURL(file);
+    // a.download = this.name + "_octree.json";
+    // a.click();
+    // URL.revokeObjectURL(a.href);
+}
+
+/**
+ * @param {String} json_octree 
+ */
+Mesh.prototype.set_octree = function(json_octree) {
+    if (json_octree === null) return;
+    this.octree = Object.assign(new OctreeNode(), JSON.parse(json_octree));
+    this.octree.assign();
 }
 //#endregion
 
@@ -80,14 +90,20 @@ Group.prototype.bounding_sphere = null;
  * @returns {Box3}
  */
 Group.prototype.get_bounding_box = function() {
-    if (this.bounding_box == null) {
+    if (this.bounding_box === null || this.bounding_box.isEmpty()) {
         this.bounding_box = new Box3().makeEmpty();
 
         for (let i = 0; i < this.children.length; i++) {
             let child = this.children[i];
 
             if (typeof child.get_bounding_box === 'function') {
-                this.bounding_box.union(child.get_bounding_box());
+                let child_box = child.get_bounding_box();
+                if (this.bounding_box.isEmpty()) {
+                    this.bounding_box.copy(child_box);
+                }
+                else {
+                    this.bounding_box.union(child_box);
+                }
             }
         }
     }
@@ -95,17 +111,24 @@ Group.prototype.get_bounding_box = function() {
 }
 
 /**
+ * THIS IS NOT A GOOD WAY TO COMPUTE BOUNDING SPHERE OF SPHERES, THE RESULT IS TOO LARGE
  * @returns {Sphere}
  */
 Group.prototype.get_bounding_sphere = function() {
-    if (this.bounding_sphere == null) {
+    if (this.bounding_sphere === null || this.bounding_sphere.isEmpty()) {
         this.bounding_sphere = new Sphere().makeEmpty();
 
         for (let i = 0; i < this.children.length; i++) {
             let child = this.children[i];
 
             if (typeof child.get_bounding_sphere === 'function') {
-                this.bounding_sphere.union(child.get_bounding_sphere());
+                let child_sphere = child.get_bounding_sphere();
+                if (this.bounding_sphere.isEmpty()) {
+                    this.bounding_sphere.copy(child_sphere);
+                }
+                else {
+                    this.bounding_sphere.union(child_sphere);
+                }
             }
         }
     }
@@ -161,14 +184,14 @@ Group.prototype.add = function(object) {
     //#endregion
 
     // Handling enlarging bounds
-    if (this.bounding_box == null) {
+    if (this.bounding_box == null || this.bounding_box.isEmpty()) {
         this.get_bounding_box();
     }
     else if (typeof object.get_bounding_box === 'function') {
         this.bounding_box.union(object.get_bounding_box())
     }
     
-    if (this.bounding_sphere == null) {
+    if (this.bounding_sphere == null || this.bounding_sphere.isEmpty()) {
         this.get_bounding_sphere();
     }
     else if (typeof object.get_bounding_sphere === 'function') {
@@ -206,6 +229,29 @@ Group.prototype.remove = function(object) {
         object.dispatchEvent( _removedEvent );
 
     }
+    //#endregion
+
+    // Handling resetting bounds to be computed again
+    this.bounding_box = null;
+    this.bounding_sphere = null;
+
+    return this;
+}
+
+Group.prototype.clear = function() {
+    // Copy pasted from three.module.js Object3D.clear
+    //#region Object3D.clear
+    for ( let i = 0; i < this.children.length; i ++ ) {
+
+        const object = this.children[ i ];
+
+        object.parent = null;
+
+        object.dispatchEvent( _removedEvent );
+
+    }
+
+    this.children.length = 0;
     //#endregion
 
     // Handling resetting bounds to be computed again
@@ -282,12 +328,18 @@ class IndexRanges {
 //#region Octree
 
 class OctreeNode {
+    constructor() {
+        this.box = new Box3();
+        /** @type {Array<OctreeNode|OctreeLeaf>} */
+        this.children = [];
+    }
+
     /**
      * @param {IndexRanges} triangle_indices
      * @param {Mesh} mesh
      * @param {Box3} bounding_box
      */
-    constructor(mesh, triangle_indices = null, bounding_box = null, depth = 0) {
+    build(mesh, triangle_indices = null, bounding_box = null, depth = 0) {
         //#region bounding_box
         /** @type {Box3} */
         this.box = new Box3();
@@ -336,7 +388,7 @@ class OctreeNode {
             sub_boxes[i] = new Box3().setFromPoints([center, corners[i]]);
         }
 
-        // Creating arrays to store indices of children triangles
+        // Creating IndexRanges to store indices of children triangles
         /** @type {Array<IndexRanges>} */
         const sub_indices = Array(8);
         for (let i = 0; i < 8; i++) {
@@ -377,14 +429,19 @@ class OctreeNode {
             let nb_tris = sub_indices[i].count
             if (nb_tris > 0) {
                 if (nb_tris < MAX_TRIS /*|| nb_tris * 2 < depth*/) {
-                    children.push(new OctreeLeaf(sub_indices[i], sub_boxes[i]))
+                    let leaf = new OctreeLeaf();
+                    leaf.build(sub_indices[i], sub_boxes[i]);
+                    children.push(leaf);
                 }
                 else {
-                    let child = new OctreeNode(mesh, sub_indices[i], sub_boxes[i], depth + 1);
+                    let child = new OctreeNode();
+                    child.build(mesh, sub_indices[i], sub_boxes[i], depth + 1);
                     if (child.children.length == 0) {
                         throw new Error("empty child");
                     }
-                    children.push(child);
+                    else {
+                        children.push(child);
+                    }
                 }
             }
         }
@@ -420,8 +477,6 @@ class OctreeNode {
                 dist = ray.origin.distanceTo(point);
             }
 
-            if (dist >= max_dist) continue;
-
             node_dists.push({
                 node: child,
                 distance: dist
@@ -430,7 +485,7 @@ class OctreeNode {
 
         node_dists.sort(ascSort);
 
-        let intersect = {point: null, distance: max_dist};
+        let intersect = {object: null, point: null, distance: max_dist};
         for (const node_dist of node_dists) {
             if (node_dist.distance >= intersect.distance) break;
 
@@ -441,15 +496,34 @@ class OctreeNode {
         }
         return intersect;
     }
+
+    assign() {
+        this.box = Object.assign(new Box3(), this.box);
+        for (let i = 0; i < this.children.length; i++) {
+            if (this.children[i].children === undefined) {
+                //leaf case
+                this.children[i] = Object.assign(new OctreeLeaf(), this.children[i]);
+            }
+            else {
+                this.children[i] = Object.assign(new OctreeNode(), this.children[i]);
+            }
+            this.children[i].assign();
+        }
+    }
 }
 
 class OctreeLeaf {
+    constructor() {
+        this.box = new Box3();
+        this.indices = new IndexRanges();
+    }
+
     /**
      * @param {IndexRanges} triangle_indices
      * @param {Mesh} mesh
      * @param {Box3} bounding_box
      */
-    constructor(triangle_indices, bounding_box) {
+    build(triangle_indices, bounding_box) {
         this.box = bounding_box;
         this.indices = triangle_indices;
     }
@@ -462,7 +536,7 @@ class OctreeLeaf {
      * @param {Number} max_dist 
      */
     raycast_first(mesh, raycaster, local_ray, max_dist = Infinity) {
-        let intersection = {point: null, distance: max_dist};
+        let intersection = {object: null, point: null, distance: max_dist};
 
         for (const range of this.indices.ranges) {
             for (let tri_id = range.start; tri_id <= range.end; tri_id += 3) {
@@ -475,8 +549,11 @@ class OctreeLeaf {
 
         return intersection;
     }
-
-
+    
+    assign() {
+        this.box = Object.assign(new Box3(), this.box);
+        this.indices = Object.assign(new IndexRanges(), this.indices);
+    }
 }
 //#endregion
 
@@ -576,14 +653,23 @@ Raycaster.prototype.intersect_first_in_mesh = function( mesh, max_dist = Infinit
 		
     let inverseWorld = new Matrix4().copy(mesh.matrixWorld).invert();
     let local_ray = new Ray().copy(this.ray).applyMatrix4(inverseWorld);
-    
+
     if (mesh.octree === undefined || mesh.octree === null) {
+        console.log("no octree defined, falling back to default method")
         let intersects = [];
         mesh._computeIntersections(this, intersects, local_ray);
+        if (intersects[0] === null) {
+            return {
+                object: null,
+                point: null,
+                distance: max_dist
+            }
+        }
         return intersects[0];
     }
 
     else {
+        console.log("using octree")
         return mesh.octree.raycast_first(mesh, this, local_ray, max_dist);
     }
 }
@@ -596,10 +682,6 @@ Raycaster.prototype.intersect_first_in_mesh = function( mesh, max_dist = Infinit
 Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
 
     if ( object.isMesh ) return this.intersect_first_in_mesh(object, max_dist);
-    if ( ! (object.isGroup || object.isScene) ) return -Infinity;
-
-    /**@type {Array<{object: Mesh | Group, distance: Number}>}*/
-    let dist_objs = [];
 
     /**@type {{object: Object3D, point: Vector3, distance: Number}}*/
     let intersection = {
@@ -607,6 +689,11 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
         point: null,
         distance: max_dist
     };
+    
+    if ( ! (object.isGroup || object.isScene) ) return intersection;
+
+    /**@type {Array<{object: Mesh | Group, distance: Number}>}*/
+    let dist_objs = [];
 
     for (let i = 0; i < object.children.length; i++) {
         let child = object.children[i];
@@ -641,7 +728,7 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
             new_inter = this.intersect_first_in_mesh(obj, intersection.distance);
         }
 
-        if (new_inter.distance < intersection.distance) {
+        if (new_inter !== undefined && new_inter !== null && new_inter.distance < intersection.distance) {
             intersection = new_inter;	
         }
     }
@@ -661,7 +748,10 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
  */
 function dist_to_bounds( object, ray ) {
 	// Only classes with get_bounding_XXX implemented are supported
-	if ( ! (object.isGroup || object.isMesh) ) return -Infinity;
+	if (
+        typeof(object.get_bounding_box) != "function" ||
+        typeof(object.get_bounding_sphere) != "function"
+    ) return -Infinity;
 
 	const box = object.get_bounding_box();
 	const sphere = object.get_bounding_sphere();
@@ -718,9 +808,9 @@ function ray_intersect_triangle(mesh, tri_id, raycaster, local_ray) {
     const index = mesh.geometry.index;
     const position = mesh.geometry.attributes.position;
 
+    const normal = mesh.geometry.attributes.normal;
     const uv = mesh.geometry.attributes.uv;
     const uv1 = mesh.geometry.attributes.uv1;
-    const normal = mesh.geometry.attributes.normal;
 
     let a, b, c;
 
@@ -746,4 +836,4 @@ function ray_intersect_triangle(mesh, tri_id, raycaster, local_ray) {
 }
 //#endregion
 
-export { Scene, Group, Mesh, Raycaster }
+export { Scene, Group, Mesh, BufferGeometry, Raycaster, OctreeNode }

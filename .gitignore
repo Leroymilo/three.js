@@ -16,5 +16,7 @@ test/e2e/chromium
 test/e2e/output-screenshots
 
 test_raycast
+test_focus
+build/sqlConnector.js
 
 **/node_modules
