@@ -23,6 +23,8 @@ As you can see if you used it, the octrees are automatically downloaded on creat
 There is a parameter in raycast_extension.js called 'MAX_TRIS' which limits the octree depth : it stops whenever a node has less than MAX_TRIS triangles. You can decrease this constant to have more precise octrees but they will take significantly longer to be built and the files that you can store will be heavier.</br>
 The final file size can be reduced by ordering triangles in the model so that consecutive indices are in the same octree leaf.
 
+/!\ The bounding sphere calculation on Group is an approximation (bigger than the actual bounding sphere), I don't have the time or knowledge to implement the actual algorithm (see [here](https://stackoverflow.com/questions/9063453/how-to-compute-the-smallest-bounding-sphere-enclosing-other-bounding-spheres)).
+
 #### JavaScript 3D library
 
 The aim of the project is to create an easy to use, lightweight, cross-browser, general purpose 3D library. The current builds only include a WebGL renderer but WebGPU (experimental), SVG and CSS3D renderers are also available as addons.
