@@ -1,23 +1,56 @@
+/**
+ * This is an extension for three.js to optimize first-intersection raycasts.
+ * It uses Object sorting to avoid raycasting objects in the background, and octrees to raycast through a mesh with a lot of triangles way faster.
+ * 
+ * /!\ The implementation of Group.get_bounding_sphere is simplified, the bounding sphere found will be larger than the real bounding sphere of the group!
+ * 
+ * This extension requires the line `export {checkGeometryIntersection};` to be added at the end of the file three.module.js to work.
+ * 
+ * (for the following examples, three.js will be imported as THREE, and this extension as RAYCAST)
+ * To use this extension's optimisation, you must import it, and define your objects with it.
+ * For example, `var my_mesh = new THREE.Mesh()` will become `var my_mesh = new RAYCAST.Mesh()`,
+ * this is applicable to BufferGeometries, Meshes, Groups and Raycasters
+ * 
+ * To use the optimized raycast, call RAYCAST.Raycaster.intersect_first,
+ * for every Mesh found, if its octree was defined it will use it, else it will fall back to the method used by three.js.
+ * To generate the octree of a mesh, call Mesh.make_octree,
+ * you can also call Scene or Group .make_octrees to generate all octrees of Meshes in their descendants.
+ * It is recommended to save the octrees with the Meshes because building an octree can be really slow, even for a loading screen,
+ * so you can get a json string to save by doing JSON.stringify(Mesh.octree), and to use it later you can call Mesh.set_octree and pass it the json string.
+ * 
+ * P.S. : using octrees ignores material because storing Mesh material groups was complicated.
+ */
+
 import { Vector3, Matrix4, Triangle, Box3, Sphere, BufferGeometry, Object3D, Mesh, MeshBasicMaterial, DoubleSide, Group, Scene, Raycaster, Ray, checkGeometryIntersection } from "./three.module.js";
 
-const default_material = new MeshBasicMaterial(DoubleSide)
+const default_material = new MeshBasicMaterial();
+default_material.side = DoubleSide;
 
 const MAX_TRIS = 100000;
+
+/**
+ * @typedef {Object} Intersection
+ * @property {Number} distance
+ * @property {Vector3 | null} point
+ * @property {Mesh | null} object
+ * @property {Number | null} faceIndex
+ */
+
+/** @type {Intersection} */
+function null_intersect(max_dist=Infinity) {
+    return {distance: max_dist, point: null, object: null, faceIndex: null}
+};
 
 // Adding methods to BufferGeometry
 //#region BufferGeometry
 
-/**
- * @returns {Box3}
- */
+/** @returns {Box3} the bounding box */
 BufferGeometry.prototype.get_bounding_box = function() {
     if (this.boundingBox == null) this.computeBoundingBox();
     return this.boundingBox;
 }
 
-/**
- * @returns {Box3}
- */
+/** @returns {Sphere} the bounding sphere */
 BufferGeometry.prototype.get_bounding_sphere = function() {
     if (this.boundingSphere == null) this.computeBoundingSphere();
     return this.boundingSphere;
@@ -27,16 +60,14 @@ BufferGeometry.prototype.get_bounding_sphere = function() {
 // Adding attributes and methods to Mesh
 //#region Mesh
 
-Mesh.prototype.bounding_box = null;
-Mesh.prototype.bounding_sphere = null;
-Mesh.prototype.octree = null;
+Mesh.bounding_box = null;
+Mesh.bounding_sphere = null;
+Mesh.octree = null;
 
-/**
- * @returns {Box3}
- */
+/** @returns {Box3} the bounding box*/
 Mesh.prototype.get_bounding_box = function() {
     if (this.bounding_box == null) {
-        
+
         this.bounding_box = new Box3();
         this.bounding_box.copy(this.geometry.get_bounding_box());
         this.updateMatrixWorld(true);
@@ -45,9 +76,7 @@ Mesh.prototype.get_bounding_box = function() {
     return this.bounding_box;
 }
 
-/**
- * @returns {Sphere}
- */
+/** @returns {Sphere} the bounding sphere*/
 Mesh.prototype.get_bounding_sphere = function() {
     if (this.bounding_sphere == null) {
         this.bounding_sphere = new Sphere();
@@ -57,22 +86,15 @@ Mesh.prototype.get_bounding_sphere = function() {
     return this.bounding_sphere;
 }
 
+/** @returns {OctreeNode} the octree generated */
 Mesh.prototype.make_octree = function() {
     /** @type {OctreeNode} */
     this.octree = new OctreeNode();
     this.octree.build(this);
-    
-    // var a = document.createElement("a");
-    // var file = new Blob([JSON.stringify(this.octree/*, undefined, 2*/)], {type: "application/json"});
-    // a.href = URL.createObjectURL(file);
-    // a.download = this.name + "_octree.json";
-    // a.click();
-    // URL.revokeObjectURL(a.href);
+    return this.octree
 }
 
-/**
- * @param {String} json_octree 
- */
+/** @param {String} json_octree - the octree as a json string*/
 Mesh.prototype.set_octree = function(json_octree) {
     if (json_octree === null) return;
     this.octree = Object.assign(new OctreeNode(), JSON.parse(json_octree));
@@ -86,9 +108,7 @@ Mesh.prototype.set_octree = function(json_octree) {
 Group.prototype.bounding_box = null;
 Group.prototype.bounding_sphere = null;
 
-/**
- * @returns {Box3}
- */
+/** @returns {Box3} the group bounding box */
 Group.prototype.get_bounding_box = function() {
     if (this.bounding_box === null || this.bounding_box.isEmpty()) {
         this.bounding_box = new Box3().makeEmpty();
@@ -110,10 +130,7 @@ Group.prototype.get_bounding_box = function() {
     return this.bounding_box;
 }
 
-/**
- * THIS IS NOT A GOOD WAY TO COMPUTE BOUNDING SPHERE OF SPHERES, THE RESULT IS TOO LARGE
- * @returns {Sphere}
- */
+/** @returns {Sphere} an **upper bound approximation** of the group bounding sphere */
 Group.prototype.get_bounding_sphere = function() {
     if (this.bounding_sphere === null || this.bounding_sphere.isEmpty()) {
         this.bounding_sphere = new Sphere().makeEmpty();
@@ -135,53 +152,9 @@ Group.prototype.get_bounding_sphere = function() {
     return this.bounding_sphere;
 }
 
-const _addedEvent = { type: 'added' };
-const _removedEvent = { type: 'removed' };
-
-/**
- * @param {Object3D} object 
- */
-Group.prototype.add = function(object) {
-    // Copy pasted from three.module.js Object3D.add
-    //#region Object3D.add
-    if ( arguments.length > 1 ) {
-
-        for ( let i = 0; i < arguments.length; i ++ ) {
-
-            this.add( arguments[ i ] );
-
-        }
-
-        return this;
-
-    }
-
-    if ( object === this ) {
-
-        console.error( 'THREE.Object3D.add: object can\'t be added as a child of itself.', object );
-        return this;
-
-    }
-
-    if ( object && object.isObject3D ) {
-
-        if ( object.parent !== null ) {
-
-            object.parent.remove( object );
-
-        }
-
-        object.parent = this;
-        this.children.push( object );
-
-        object.dispatchEvent( _addedEvent );
-
-    } else {
-
-        console.error( 'THREE.Object3D.add: object not an instance of THREE.Object3D.', object );
-
-    }
-    //#endregion
+/** @returns {Group} this @param {Object3D} object */
+Group.add = function(object) {
+    this.prototype.add();   // equivalent to super.add()
 
     // Handling enlarging bounds
     if (this.bounding_box == null || this.bounding_box.isEmpty()) {
@@ -190,7 +163,7 @@ Group.prototype.add = function(object) {
     else if (typeof object.get_bounding_box === 'function') {
         this.bounding_box.union(object.get_bounding_box())
     }
-    
+
     if (this.bounding_sphere == null || this.bounding_sphere.isEmpty()) {
         this.get_bounding_sphere();
     }
@@ -201,35 +174,9 @@ Group.prototype.add = function(object) {
     return this;
 }
 
-/**
- * @param {Object3D} object
- */
-Group.prototype.remove = function(object) {
-    // Copy pasted from three.module.js Object3D.remove
-    //#region Object3D.remove
-    if ( arguments.length > 1 ) {
-
-        for ( let i = 0; i < arguments.length; i ++ ) {
-
-            this.remove( arguments[ i ] );
-
-        }
-
-        return this;
-
-    }
-
-    const index = this.children.indexOf( object );
-
-    if ( index !== - 1 ) {
-
-        object.parent = null;
-        this.children.splice( index, 1 );
-
-        object.dispatchEvent( _removedEvent );
-
-    }
-    //#endregion
+/** @returns {Group} this @param {Object3D} object */
+Group.remove = function(object) {
+    this.prototype.remove(object);   // equivalent to super.add()
 
     // Handling resetting bounds to be computed again
     this.bounding_box = null;
@@ -238,21 +185,9 @@ Group.prototype.remove = function(object) {
     return this;
 }
 
-Group.prototype.clear = function() {
-    // Copy pasted from three.module.js Object3D.clear
-    //#region Object3D.clear
-    for ( let i = 0; i < this.children.length; i ++ ) {
-
-        const object = this.children[ i ];
-
-        object.parent = null;
-
-        object.dispatchEvent( _removedEvent );
-
-    }
-
-    this.children.length = 0;
-    //#endregion
+/** @returns {Group} this */
+Group.clear = function() {
+    this.prototype.clear();   // equivalent to super.add()
 
     // Handling resetting bounds to be computed again
     this.bounding_box = null;
@@ -260,31 +195,26 @@ Group.prototype.clear = function() {
 
     return this;
 }
+//#endregion
 
-Group.prototype.make_octrees = function() {
+function make_octrees() {
     for (const child of this.children) {
-        if (child.isGroup) {
+        if (typeof(child.make_octrees === "function")) {
             child.make_octrees();
         }
-        else if (child.isMesh) {
+        else if (child.isMesh & typeof(child.make_octree === "function")) {
             if (child.octree === null) child.make_octree()
         }
     }
 }
-//#endregion
 
-Scene.prototype.make_octrees = function() {
-    for (const child of this.children) {
-        if (child.isGroup) {
-            child.make_octrees();
-        }
-        else if (child.isMesh) {
-            if (child.octree === null) child.make_octree();
-        }
-    }
-}
+/** Traverse the Group to build an octree for each Mesh descendant */
+Group.prototype.make_octrees = make_octrees
 
-// Class to hold ranges of triangle indices
+/** Traverse the Scene to build an octree for each Mesh descendant */
+Scene.prototype.make_octrees = make_octrees
+
+// Class to hold ranges of triangle indices for efficient storage
 //#region IndexRanges
 
 class IndexRanges {
@@ -305,10 +235,7 @@ class IndexRanges {
         }
 
         const last_range = this.ranges[this.ranges.length-1];
-        if (last_range.start <= index && index <= last_range.end) {
-            //this might not be ascending but it's still fine
-            return;
-        }
+
         if (index < last_range.start) {
             throw new Error("Indices were not added to index group in ascending order!");
         }
@@ -316,9 +243,11 @@ class IndexRanges {
         if (index == last_range.end + 3) {
             last_range.end = index;
         }
+
         else {
             this.ranges.push({start: index, end: index});
         }
+        
         this.count ++;
     }
 }
@@ -334,12 +263,15 @@ class OctreeNode {
         this.children = [];
     }
 
-    /**
-     * @param {IndexRanges} triangle_indices
+    /**Builds a full octree from a mesh.
+     * This is also called on subtrees, hence idx_ranges and bounding_box,
+     * since they are required to determine which node of the octree is being built.
+     * These arguments are fetched from the mesh at the octree root.
+     * @param {IndexRanges} idx_ranges
      * @param {Mesh} mesh
      * @param {Box3} bounding_box
      */
-    build(mesh, triangle_indices = null, bounding_box = null, depth = 0) {
+    build(mesh, idx_ranges = null, bounding_box = null, depth = 0) {
         //#region bounding_box
         /** @type {Box3} */
         this.box = new Box3();
@@ -355,11 +287,11 @@ class OctreeNode {
         }
         //#endregion
 
-        //#region triangle_indices
-        if (triangle_indices === null && mesh !== undefined) {
-            triangle_indices = get_indices(mesh);
+        //#region idx_ranges
+        if (idx_ranges === null && mesh !== undefined) {
+            idx_ranges = get_indices(mesh);
         }
-        else if (triangle_indices === null) {
+        else if (idx_ranges === null) {
             console.log("No triangle indices available to make Octree Node!");
             return;
         }
@@ -390,52 +322,48 @@ class OctreeNode {
 
         // Creating IndexRanges to store indices of children triangles
         /** @type {Array<IndexRanges>} */
-        const sub_indices = Array(8);
+        const sub_ranges = Array(8);
         for (let i = 0; i < 8; i++) {
-            sub_indices[i] = new IndexRanges();
+            sub_ranges[i] = new IndexRanges();
         }
 
         // Populating children indices by intersecting triangles with boxes
-        for (const id_range of triangle_indices.ranges) {
-            for (let index = id_range.start; index <= id_range.end; index += 3)
+        for (const idx_range of idx_ranges.ranges) {
+            for (let index = idx_range.start; index <= idx_range.end; index += 3)
             {
+                // Fetching a triangle each time is not slower than using a dictionary.
                 const triangle = get_triangle(index, mesh);
-                let in_child = false;
-
-                if (!this.box.intersectsTriangle(triangle)) {
-                    throw new Error("given triangle not in box");
-                }
 
                 for (let i = 0; i < 8; i++) {
 
                     if (sub_boxes[i].intersectsTriangle(triangle)) {
-                        sub_indices[i].add(index);
+                        sub_ranges[i].add(index);
                         in_child = true;
                     }
 
                 }
-
-                if (!in_child) {
-                    throw new Error("triangle on none of the children")
-                }
+                
+                // Please note that a triangle can be in multiple sub-nodes (overlap).
             }
         }
 
         // Creating children from sub-boxes and their triangle indices
         /** @type {Array<OctreeNode | OctreeLeaf>} */
         const children = [];
-        
+
         for (let i = 0; i < 8; i++) {
-            let nb_tris = sub_indices[i].count
+            let nb_tris = sub_ranges[i].count
             if (nb_tris > 0) {
                 if (nb_tris < MAX_TRIS /*|| nb_tris * 2 < depth*/) {
+                    // The condition for choosing a leaf can be changed 
                     let leaf = new OctreeLeaf();
-                    leaf.build(sub_indices[i], sub_boxes[i]);
+                    leaf.build(sub_ranges[i], sub_boxes[i]);
                     children.push(leaf);
                 }
+
                 else {
                     let child = new OctreeNode();
-                    child.build(mesh, sub_indices[i], sub_boxes[i], depth + 1);
+                    child.build(mesh, sub_ranges[i], sub_boxes[i], depth + 1);
                     if (child.children.length == 0) {
                         throw new Error("empty child");
                     }
@@ -457,23 +385,25 @@ class OctreeNode {
         //#endregion
     }
 
-    /**
-     * @returns {{object: Object3D, point: Vector3, distance: Number}}
-     * @param {Mesh} mesh 
-     * @param {Raycaster} raycaster 
-     * @param {Ray} local_ray 
-     * @param {Number} max_dist 
+    /**Recursive raycast through a mesh's octree
+     * @returns {Intersection}
+     * @param {Mesh} mesh
+     * @param {Raycaster} raycaster
+     * @param {Ray} local_ray
+     * @param {Number} max_dist
      */
     raycast_first(mesh, raycaster, local_ray, max_dist = Infinity) {
         const ray = raycaster.ray;
 
+        // Getting the distance between each child node and the start of the ray...
         let node_dists = [];
         for (const child of this.children) {
-            let dist = 0;
+            let dist = 0;   // distance is 0 if ray starts in node
 
             if (!child.box.containsPoint(ray.origin)) {
                 let point = new Vector3();
-                if (ray.intersectBox(child.box, point) === null) continue;
+                if (ray.intersectBox(child.box, point) === null)
+                    continue;  // skip node if no intersection
                 dist = ray.origin.distanceTo(point);
             }
 
@@ -483,9 +413,11 @@ class OctreeNode {
             });
         }
 
-        node_dists.sort(ascSort);
+        // ... in order to sort them.
+        node_dists.sort(dist_comp);
 
-        let intersect = {object: null, point: null, distance: max_dist};
+        let intersect = null_intersect(max_dist);
+        // Raycasting child nodes until they start further than the first intersection.
         for (const node_dist of node_dists) {
             if (node_dist.distance >= intersect.distance) break;
 
@@ -497,6 +429,7 @@ class OctreeNode {
         return intersect;
     }
 
+    /** Recursively assigns the correct prototype to each attribute after reading from json */
     assign() {
         this.box = Object.assign(new Box3(), this.box);
         for (let i = 0; i < this.children.length; i++) {
@@ -518,29 +451,32 @@ class OctreeLeaf {
         this.indices = new IndexRanges();
     }
 
-    /**
-     * @param {IndexRanges} triangle_indices
-     * @param {Mesh} mesh
+    /**Gives attributes to a leaf of an octree.
+     * @param {IndexRanges} idx_ranges
      * @param {Box3} bounding_box
      */
-    build(triangle_indices, bounding_box) {
+    build(idx_ranges, bounding_box) {
         this.box = bounding_box;
-        this.indices = triangle_indices;
+        this.indices = idx_ranges;
     }
-    
-    /**
-     * @returns {{object: Object3D, point: Vector3, distance: Number}}
-     * @param {Mesh} mesh 
-     * @param {Raycaster} raycaster 
-     * @param {Ray} local_ray 
-     * @param {Number} max_dist 
+
+    /**Final raycast of an octree search.
+     * It goes through every triangle index it has
+     * and asks the given mesh for an intersection.
+     * @returns {Intersection}
+     * @param {Mesh} mesh
+     * @param {Raycaster} raycaster
+     * @param {Ray} local_ray
+     * @param {Number} max_dist
      */
     raycast_first(mesh, raycaster, local_ray, max_dist = Infinity) {
-        let intersection = {object: null, point: null, distance: max_dist};
+        let intersection = null_intersect(max_dist);
 
+        // Looping over every index.
         for (const range of this.indices.ranges) {
             for (let tri_id = range.start; tri_id <= range.end; tri_id += 3) {
                 let new_inter = ray_intersect_triangle(mesh, tri_id, raycaster, local_ray);
+                if (isFinite(new_inter.distance)) console.log(new_inter);
                 if (new_inter.distance < intersection.distance) {
                     intersection = new_inter;
                 }
@@ -549,7 +485,8 @@ class OctreeLeaf {
 
         return intersection;
     }
-    
+
+    /** Assigns the correct prototypes to its attributes after reading from json */
     assign() {
         this.box = Object.assign(new Box3(), this.box);
         this.indices = Object.assign(new IndexRanges(), this.indices);
@@ -559,7 +496,8 @@ class OctreeLeaf {
 
 // Functions to build the Octree
 //#region Octree_utils
-/**
+
+/**Get a triangle from an index and its mesh.
  * @returns {Triangle}
  * @param {Number} tri_id
  * @param {Mesh} mesh
@@ -568,6 +506,7 @@ function get_triangle(tri_id, mesh) {
     const index = mesh.geometry.index;
     const position = mesh.geometry.attributes.position;
 
+    // Converting indices if the mesh is indexed.
     let a, b, c;
     if (index !== null) {
         a = index.getX(tri_id);
@@ -580,16 +519,20 @@ function get_triangle(tri_id, mesh) {
         c = tri_id+2;
     }
 
+    // Asking the mesh for its vertices from the indices.
     let pA = new Vector3(), pB = new Vector3(), pC = new Vector3();
     mesh.getVertexPosition(a, pA);
     mesh.getVertexPosition(b, pB);
     mesh.getVertexPosition(c, pC);
 
+    // Getting the triangle in world coordinates.
     let matrix = mesh.matrixWorld;
     return new Triangle(pA.applyMatrix4(matrix), pB.applyMatrix4(matrix), pC.applyMatrix4(matrix))
 }
 
-/**
+/**Get all ranges of triangle indices of a mesh.
+ * If  everything's right, it should be a single range
+ * going from 0 to 3 times the number of triangles.
  * @returns {IndexRanges}
  * @param {Mesh} mesh
  */
@@ -606,12 +549,14 @@ function get_indices(mesh) {
     if ( index !== null ) {
         count = index.count;
     }
+    // We get the number of triangles directly from the number of vertices if there's no index.
     else if ( position !== undefined ) {
         count = position.count;
     }
 
+    // Treating the case of a mesh with material groups.
     if (Array.isArray( mesh.material )) {
-        
+
         for ( const group of groups ) {
             const start = Math.max( group.start, drawRange.start );
             const end = Math.min( count, Math.min( ( group.start + group.count ), ( drawRange.start + drawRange.count ) ) );
@@ -631,6 +576,7 @@ function get_indices(mesh) {
         }
     }
 
+    // Sorting indices to add them in an IndexRanges.
     indices.sort(((a, b) => a - b));
     let id_ranges = new IndexRanges();
     for (const id of indices) {
@@ -644,38 +590,38 @@ function get_indices(mesh) {
 // Remaking a recursive raycast method optimized to only return the first intersection
 //#region Raycast
 
-/**
- * @returns {{object: Object3D, point: Vector3, distance: Number}}
+/**Returns the first intersection between the raycaster and the given mesh.
+ * This methods checks if it can use octrees, if not it fallbacks to mesh._computeIntersections.
+ * @returns {Intersection}
  * @param {Mesh} mesh
  * @param {Number} max_dist
  */
 Raycaster.prototype.intersect_first_in_mesh = function( mesh, max_dist = Infinity ) {
-		
+
+    // The local ray is required when calling checkGeometryIntersection on every triangle tested, so it's computed once here.
     let inverseWorld = new Matrix4().copy(mesh.matrixWorld).invert();
     let local_ray = new Ray().copy(this.ray).applyMatrix4(inverseWorld);
 
     if (mesh.octree === undefined || mesh.octree === null) {
-        console.log("no octree defined, falling back to default method")
+        // console.log("no octree defined, falling back to default method")
         let intersects = [];
         mesh._computeIntersections(this, intersects, local_ray);
-        if (intersects[0] === null) {
-            return {
-                object: null,
-                point: null,
-                distance: max_dist
-            }
+        intersects.sort(dist_comp);
+        // We only keep the first intersection, but we can keep all its data.
+        if (intersects.length == 0) {
+            return null_intersect(max_dist);
         }
         return intersects[0];
     }
 
     else {
-        console.log("using octree")
+        // console.log("using octree")
         return mesh.octree.raycast_first(mesh, this, local_ray, max_dist);
     }
 }
 
-/**
- * @returns {{object: Object3D, point: Vector3, distance: Number}}
+/**Recursive traversal of a Scene/Group to get the first intersection with a given ray
+ * @returns {Intersection}
  * @param {Scene | Group | Mesh} object
  * @param {Number} max_dist
  */
@@ -683,20 +629,18 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
 
     if ( object.isMesh ) return this.intersect_first_in_mesh(object, max_dist);
 
-    /**@type {{object: Object3D, point: Vector3, distance: Number}}*/
-    let intersection = {
-        object: null,
-        point: null,
-        distance: max_dist
-    };
-    
+    /**@type {Intersection}*/
+    let intersection = null_intersect(max_dist);
+
+    // Only properly applies to Groups and Scenes,
+    // if you notice another class that needs traversing, add it here.
     if ( ! (object.isGroup || object.isScene) ) return intersection;
 
     /**@type {Array<{object: Mesh | Group, distance: Number}>}*/
     let dist_objs = [];
 
-    for (let i = 0; i < object.children.length; i++) {
-        let child = object.children[i];
+    // Getting the distance between each child and the ray origin
+    for (const child of object.children) {
 
         if ( !(child.isMesh || child.isGroup) ) continue;
 
@@ -710,17 +654,18 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
         });
     }
 
-    dist_objs.sort( ascSort );
+    dist_objs.sort( dist_comp );
 
-    for (let i = 0; i < dist_objs.length; i++) {
+    //intersecting objects until they are further away than the first intersection.
+    for (const dist_obj of dist_objs) {
 
-        if (dist_objs[i].distance >= intersection.distance) {
+        if (dist_obj.distance >= intersection.distance) {
             return intersection;
         }
 
-        /**@type {{object: Object3D, point: Vector3, distance: Number}}*/
+        /**@type {Intersection}*/
         let new_inter;
-        let obj = dist_objs[i].object;
+        let obj = dist_obj.object;
         if (obj.isGroup) {
             new_inter = this.intersect_first(obj, intersection.distance);
         }
@@ -728,8 +673,8 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
             new_inter = this.intersect_first_in_mesh(obj, intersection.distance);
         }
 
-        if (new_inter !== undefined && new_inter !== null && new_inter.distance < intersection.distance) {
-            intersection = new_inter;	
+        if (new_inter.distance < intersection.distance) {
+            intersection = new_inter;
         }
     }
 
@@ -741,7 +686,8 @@ Raycaster.prototype.intersect_first = function(object, max_dist = Infinity) {
 // Functions to raycast
 //#region Raycaster_utils
 
-/**
+/**Computes the distance between the origin of the given ray and one of the bounding shapes of the object
+ * (further is better because closer to the actual geometry).
  * @returns {Number}
  * @param {Mesh | Group} object
  * @param {Ray} ray
@@ -759,6 +705,7 @@ function dist_to_bounds( object, ray ) {
 
 	let box_dist = 0, sphere_dist = 0;
 
+    // Distance to bounding box
 	if (box.containsPoint(origin)) {
 		box_dist = -1;
 	}
@@ -768,6 +715,7 @@ function dist_to_bounds( object, ray ) {
 		else box_dist = origin.distanceTo(box_inter);
 	}
 
+    // Distance to bounding sphere
 	if (sphere.containsPoint(origin)) {
 		sphere_dist = -1;
 	}
@@ -787,24 +735,29 @@ function dist_to_bounds( object, ray ) {
 	if (box_dist < 0) return sphere_dist;
 	if (sphere_dist < 0) return box_dist;
 
+    // The distance to the furthest bounding shape is taken because it's closer to the actual model.
+
 	return Math.max(box_dist, sphere_dist);
 }
 
-function ascSort( a, b ) {
+/** Compares the distance of 2 objects */
+function dist_comp( a, b ) {
 
 	return a.distance - b.distance;
 
 }
 
-/**
- * @returns {{point: Vector3, distance: Number}}
+/**Computes the intersection between a ray and a triangle.
+ * The triangle is given by its mesh and its index in the mesh.
+ * If there's no intersection, returns {distance: Infinity, point: null, object: null, ...}.
  * @param {Mesh} mesh
  * @param {Number} tri_id
  * @param {Raycaster} raycaster
  * @param {Ray} local_ray
+ * @returns {Intersection}
  */
 function ray_intersect_triangle(mesh, tri_id, raycaster, local_ray) {
-        
+
     const index = mesh.geometry.index;
     const position = mesh.geometry.attributes.position;
 
@@ -814,6 +767,7 @@ function ray_intersect_triangle(mesh, tri_id, raycaster, local_ray) {
 
     let a, b, c;
 
+    // Converting indices if the mesh uses indexing.
     if ( index !== null ) {
         a = index.getX( tri_id );
         b = index.getX( tri_id + 1 );
@@ -824,15 +778,19 @@ function ray_intersect_triangle(mesh, tri_id, raycaster, local_ray) {
         b = tri_id + 1;
         c = tri_id + 2;
     }
-    
+    else return null_intersect();
+
+    // Calling a three.js function handling material, uv and normal coordinates.
+    // It is necessary that three.js exports it.
     let intersection = checkGeometryIntersection( mesh, default_material, raycaster, local_ray, uv, uv1, normal, a, b, c );
 
     if ( intersection ) {
-        intersection.faceIndex = Math.floor( tri_id / 3 ); // triangle number in non-indexed buffer semantics
+        intersection.faceIndex = Math.floor( tri_id / 3 );
+        // triangle number in non-indexed buffer semantics
         return intersection;
     }
 
-    else return {distance: Infinity};
+    else return null_intersect();
 }
 //#endregion
 
